@@ -1,20 +1,19 @@
-"""End-to-end: SWE-bench Verified × Claude Code, all on Agentix.
+"""End-to-end: SWE-bench Verified × Claude Code on Agentix.
 
 Prereqs:
-    pip install -e ./claude-code -e ./swebench   # so the namespaces are
-                                                  # importable on the caller
+    pip install -e ./claude-code -e ./swebench   # caller-side imports
+    pip install datasets                          # for loading the split
     agentix build bash files claude-code swebench -o cookbook:0.1.0
     export ANTHROPIC_API_KEY=sk-...
 
 Run:
     python examples/swebench_with_claude_code.py            # one instance
     python examples/swebench_with_claude_code.py --limit 5  # five
-    python examples/swebench_with_claude_code.py --image my-cookbook:0.2.0
+    python examples/swebench_with_claude_code.py --image my:0.2.0
 
-The script deploys a local sandbox from the bundle image, fetches one
-SWE-bench instance, hands the problem to Claude Code, scores the
-resulting patch with SWE-bench's held-out tests, and tears the
-sandbox down on exit.
+The script loads SWE-bench Verified host-side, deploys a local sandbox
+from the bundle image, and per instance: materialises the repo via
+`bash`, runs `claude_code.run`, then `swebench.score`s the patch.
 """
 
 from __future__ import annotations
@@ -24,35 +23,57 @@ import asyncio
 import os
 import sys
 
-from agentix import RuntimeClient, SandboxConfig, claude_code, swebench
+import bash
+import claude_code
+import swebench
+from agentix import RuntimeClient, SandboxConfig
 from agentix.deployment.base import session
 from agentix.deployment.docker import DockerDeployment
+from datasets import load_dataset
 
 
-async def solve_one(c: RuntimeClient, instance_id: str, api_key: str) -> None:
-    print(f"[{instance_id}] fetching task …")
-    task = await c.remote(swebench.get_task, instance_id=instance_id)
-    print(f"[{instance_id}] workdir={task.workdir} problem={task.problem[:120]!r}")
+WORKDIR = "/testbed"
 
-    print(f"[{instance_id}] running claude_code …")
+
+async def solve_one(c: RuntimeClient, inst: dict, api_key: str) -> None:
+    iid = inst["instance_id"]
+    print(f"[{iid}] cloning {inst['repo']}@{inst['base_commit'][:12]}")
+    await c.remote(
+        bash.run,
+        command=(
+            f"rm -rf {WORKDIR} && "
+            f"git clone --quiet https://github.com/{inst['repo']}.git {WORKDIR} && "
+            f"cd {WORKDIR} && git checkout --quiet {inst['base_commit']}"
+        ),
+        timeout=600,
+    )
+
+    print(f"[{iid}] running claude_code")
     cc = await c.remote(
         claude_code.run,
-        instruction=task.problem,
-        workdir=task.workdir,
+        instruction=inst["problem_statement"],
+        workdir=WORKDIR,
         timeout=900,
         env={"ANTHROPIC_API_KEY": api_key},
     )
-    print(f"[{instance_id}] claude exit={cc.exit_code} patch_bytes={len(cc.patch)}")
+    print(f"[{iid}] claude exit={cc.exit_code} patch_bytes={len(cc.patch)}")
 
     if not cc.patch:
-        print(f"[{instance_id}] no patch produced — skipping score")
+        print(f"[{iid}] no patch produced — skipping score")
         return
 
-    print(f"[{instance_id}] scoring …")
-    s = await c.remote(swebench.score, instance_id=instance_id, patch=cc.patch)
+    s = await c.remote(
+        swebench.score,
+        repo=inst["repo"],
+        base_commit=inst["base_commit"],
+        patch=cc.patch,
+        test_patch=inst["test_patch"],
+        fail_to_pass=list(inst["FAIL_TO_PASS"]),
+        pass_to_pass=list(inst["PASS_TO_PASS"]),
+    )
     verdict = "PASS" if s.passed else "FAIL"
-    print(f"[{instance_id}] {verdict}  "
-          f"resolved={len(s.fail_to_pass_resolved)}/{len(s.fail_to_pass_resolved) + len(s.fail_to_pass_missing)}  "
+    ftp_total = len(s.fail_to_pass_resolved) + len(s.fail_to_pass_missing)
+    print(f"[{iid}] {verdict}  resolved={len(s.fail_to_pass_resolved)}/{ftp_total}  "
           f"regressions={len(s.pass_to_pass_broken)}")
 
 
@@ -62,15 +83,15 @@ async def main(args: argparse.Namespace) -> int:
         print("error: ANTHROPIC_API_KEY is not set", file=sys.stderr)
         return 2
 
-    cfg = SandboxConfig(image=args.image)
-    deployment = DockerDeployment()
+    ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
+    instances = list(ds.select(range(args.limit)))
 
-    async with session(deployment, cfg) as sandbox:
+    cfg = SandboxConfig(image=args.image)
+    async with session(DockerDeployment(), cfg) as sandbox:
         print(f"sandbox up: {sandbox.runtime_url}")
         async with RuntimeClient(sandbox.runtime_url) as c:
-            ids = await c.remote(swebench.list_ids, limit=args.limit)
-            for instance_id in ids:
-                await solve_one(c, instance_id, api_key)
+            for inst in instances:
+                await solve_one(c, inst, api_key)
     return 0
 
 

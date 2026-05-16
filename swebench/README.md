@@ -1,88 +1,111 @@
-# `agentix.swebench` — SWE-bench Verified as an Agentix namespace
+# `swebench` — SWE-bench Verified scoring as an Agentix namespace
 
-A worked example of wrapping a benchmark/dataset as an Agentix
-namespace. The pattern generalises to any "hand out instances, score
-patches" benchmark (HumanEval, MLE-Bench, OSWorld, …).
+A worked example of wrapping a benchmark's *scorer* as a namespace.
+The pattern generalises to any "given a patch + instance metadata,
+did it pass?" eval.
+
+## Surface
+
+ONE method:
+
+```python
+async def score(
+    *,
+    repo: str,                   # "django/django"
+    base_commit: str,            # commit hash
+    patch: str,                  # the model's patch
+    test_patch: str,             # the dataset's held-out test patch
+    fail_to_pass: list[str],     # tests that should pass after the fix
+    pass_to_pass: list[str],     # tests that should still pass
+    test_cmd: str | None = None, # defaults to pytest on FTP+PTP
+    timeout: float = 1800,
+) -> Score
+```
+
+Returns
+`Score(passed, fail_to_pass_resolved, fail_to_pass_missing, pass_to_pass_broken, logs)`.
 
 ## Layout
 
 ```
 swebench/
-├── pyproject.toml                   — name = "agentix-swebench"
-└── src/agentix/swebench/__init__.py — list_ids, get_task, score
+├── pyproject.toml      — name = "agentix-swebench"
+└── swebench.py         — async def score(...)
 ```
 
-No `default.nix` here — the dataset is downloaded lazily from
-HuggingFace on first call. For larger datasets you might prefer to
-bake the records into the image via Nix; see "Where the data lives"
-in the [framework docs](https://github.com/Agentiix/Agentix/blob/master/docs/integrate-dataset.mdx).
+Flat single-file module, just like `claude-code/`.
 
-## Method surface
+## Why only `score`?
 
-```python
-async def list_ids(limit: int | None = None) -> list[str]: ...
-async def get_task(instance_id: str) -> Task: ...
-async def score(instance_id: str, patch: str, timeout: float = 1800) -> Score: ...
-```
+- **Dataset enumeration is host-side.** The caller already wants to
+  pick which instances to run, in what order, with what filters —
+  `datasets.load_dataset(...)` in their orchestration script does this
+  better than a thin remote wrapper around it.
+- **Repo materialisation is the agent's setup, not the scorer's.**
+  Use the `bash` namespace (`git clone …`) or let the agent clone the
+  repo itself as part of its prompt. The scorer never has to mediate
+  the agent's workspace.
+- **Score is what only the scorer can do.** Applying the held-out
+  test patch + running the right tests + parsing the right output is
+  the work that belongs *inside* the sandbox, next to the test runner.
 
-`get_task` materialises `rec.repo @ rec.base_commit` at
-`$AGENTIX_UPLOAD_ROOT/swebench/<instance>/agent/` and returns the
-problem statement + workdir path. The agent works there.
-
-`score` re-materialises a **clean** copy at
-`$AGENTIX_UPLOAD_ROOT/swebench/<instance>/eval/` — agent mutations
-must not leak into the ground-truth run — applies the model patch
-plus the held-out `test_patch`, then runs the FAIL_TO_PASS +
-PASS_TO_PASS tests under pytest. The returned `Score` breaks down
-which held-out tests now pass and whether any previously-passing
-tests broke.
+The namespace owns one job and does it.
 
 ## Usage
 
 ```python
-from agentix import RuntimeClient, swebench, claude_code
+from datasets import load_dataset
+from agentix import RuntimeClient
+import bash, claude_code, swebench
+
+ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
+inst = ds[0]
 
 async with RuntimeClient(sandbox.runtime_url) as c:
-    ids  = await c.remote(swebench.list_ids, limit=5)
-    task = await c.remote(swebench.get_task, instance_id=ids[0])
+    # 1. Set up the agent's workdir
+    await c.remote(
+        bash.run,
+        command=(
+            f"rm -rf /testbed && "
+            f"git clone https://github.com/{inst['repo']}.git /testbed && "
+            f"cd /testbed && git checkout {inst['base_commit']}"
+        ),
+    )
 
+    # 2. Run the agent
     cc = await c.remote(
         claude_code.run,
-        instruction=task.problem,
-        workdir=task.workdir,
+        instruction=inst["problem_statement"],
+        workdir="/testbed",
         env={"ANTHROPIC_API_KEY": api_key},
     )
 
+    # 3. Score
     s = await c.remote(
-        swebench.score, instance_id=task.instance_id, patch=cc.patch,
+        swebench.score,
+        repo=inst["repo"],
+        base_commit=inst["base_commit"],
+        patch=cc.patch,
+        test_patch=inst["test_patch"],
+        fail_to_pass=inst["FAIL_TO_PASS"],
+        pass_to_pass=inst["PASS_TO_PASS"],
     )
-    print("passed" if s.passed else "failed", s.fail_to_pass_missing)
+    print("PASS" if s.passed else "FAIL", s.fail_to_pass_missing)
 ```
 
-## Scope of this recipe
+## Scope
 
-This is a *compact demonstration* of the namespace pattern — it loads
-the dataset, checks out the repo, applies the patch, runs the
-held-out tests. For full SWE-bench fidelity:
-
-- Each instance needs a specific Python toolchain (the
-  `environment_setup_commit` + the repo's own setup). The recipe
-  assumes the sandbox already has a workable interpreter and pytest;
-  real eval pins the env per-instance.
-- Some repos use unittest or nose instead of pytest. `_test_cmd`
-  hardcodes pytest.
-- Result parsing reads pytest's `-v` output. A more robust path
-  shells out to the official `swebench` harness (`pip install
-  swebench`) and lets it produce the report.
-
-Drop in `swebench.harness.run_evaluation(...)` inside `score` when
-you need the official numbers; the cookbook leaves it out to keep
-the example dependency-light and the control flow visible.
+The default pytest invocation works for the pytest-using majority of
+SWE-bench Verified. Django, nose, tox-wrapped, or instance-specific
+build steps need an explicit `test_cmd` from the caller (or a pre-
+built per-instance environment). For full reproducibility numbers,
+delegate to `swebench.harness.run_evaluation` from inside `score`
+rather than relying on this recipe's compact pytest path.
 
 ## Building
 
 ```bash
 agentix build swebench -o swebench:0.1.0
-# Or, bundled with the agent:
+# Or, bundled with the agent + bash:
 agentix build bash files claude-code swebench -o cookbook:0.1.0
 ```
