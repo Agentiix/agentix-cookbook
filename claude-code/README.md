@@ -10,12 +10,12 @@ this directory, swap the Nix derivation's `src`, adjust the argv.
 claude-code/
 ├── pyproject.toml       — name = "agentix-claude-code"
 ├── default.nix          — Nix derivation: claude CLI + git
-└── claude_code.py       — async def run(...) and types
+└── claude_code.py       — async def run(...) and RunResult
 ```
 
-The recipe is a flat, single-file module — no `src/agentix/…`
-ceremony. The framework only cares that the `agentix.namespace`
-entry point names a real Python module:
+Flat single-file module, no `src/agentix/…` ceremony. The framework
+only cares that the `agentix.namespace` entry point names a real
+Python module:
 
 ```toml
 [project.entry-points."agentix.namespace"]
@@ -29,10 +29,6 @@ import claude_code
 
 await c.remote(claude_code.run, instruction="…", workdir="/testbed")
 ```
-
-(If you want `from agentix import claude_code` instead, put the source
-under `src/agentix/claude_code/` and point the entry-point value at
-`agentix.claude_code`. Both shapes are valid; the flat one is simpler.)
 
 ## Method surface
 
@@ -48,9 +44,31 @@ async def run(
 ) -> RunResult
 ```
 
-Returns `RunResult(exit_code, stdout, stderr, patch)`. `patch` is the
-unified diff of all changes the agent made to `workdir`, computed via
-`git add -A && git diff --cached` after `claude` exits.
+Returns `RunResult(exit_code, stdout, stderr)`. That's it — the
+namespace's job ends when claude exits.
+
+## Why no patch field?
+
+Earlier versions returned `patch` by running `git add -A && git diff
+--cached` inside `run()`. Pulled out: patch extraction is generic
+"what changed in this workdir", which is not the agent's identity.
+It applies equally to Claude Code, Aider, OpenHands, hand-written
+edits, anything. Putting it on the agent namespace means every agent
+recipe has to ship the same git plumbing.
+
+Extract on the host instead:
+
+```python
+diff = await c.remote(
+    bash.run,
+    command=f"cd {workdir} && git add -A && git diff --cached --no-color",
+)
+patch = diff.stdout if diff.exit_code == 0 else ""
+```
+
+`bash.run` is the framework's built-in shell primitive. The bundle
+image needs `git` on PATH (it usually does — most benchmarks rely on
+it too); the agent namespace doesn't have to mediate.
 
 ## Building
 
@@ -59,7 +77,7 @@ agentix build claude-code -o claude-code:0.1.0
 agentix deploy local --image claude-code:0.1.0
 ```
 
-Typically bundled with other namespaces:
+Typically bundled with bash + a benchmark:
 
 ```bash
 agentix build bash files claude-code swebench -o cookbook:0.1.0

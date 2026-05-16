@@ -56,18 +56,29 @@ async def solve_one(c: RuntimeClient, inst: dict, api_key: str) -> None:
         timeout=900,
         env={"ANTHROPIC_API_KEY": api_key},
     )
-    print(f"[{iid}] claude exit={cc.exit_code} patch_bytes={len(cc.patch)}")
+    patch = await _extract_patch(c, WORKDIR)
+    print(f"[{iid}] claude exit={cc.exit_code} patch_bytes={len(patch)}")
 
-    if not cc.patch:
+    if not patch:
         print(f"[{iid}] no patch produced — skipping score")
         return
 
-    s = await c.remote(swebench.score, instance=inst, patch=cc.patch)
+    s = await c.remote(swebench.score, instance=inst, patch=patch)
     verdict = "PASS" if s.resolved else "FAIL"
     ftp_total = len(s.fail_to_pass_resolved) + len(s.fail_to_pass_missing)
     print(f"[{iid}] {verdict}  patch_applied={s.patch_applied}  "
           f"resolved={len(s.fail_to_pass_resolved)}/{ftp_total}  "
           f"regressions={len(s.pass_to_pass_broken)}")
+
+
+async def _extract_patch(c: RuntimeClient, workdir: str) -> str:
+    """All changes in `workdir` as a unified diff, including untracked files."""
+    r = await c.remote(
+        bash.run,
+        command=f"cd {workdir} && git add -A && git diff --cached --no-color",
+        timeout=60,
+    )
+    return r.stdout if r.exit_code == 0 else ""
 
 
 async def main(args: argparse.Namespace) -> int:
