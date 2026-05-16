@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentix-claude-code"
+version = "0.1.0"
+description = "Claude Code CLI as an Agentix namespace"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.entry-points."agentix.namespace"]
+claude_code = "agentix.claude_code"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentix"]

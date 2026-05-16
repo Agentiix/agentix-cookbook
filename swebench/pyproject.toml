@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentix-swebench"
+version = "0.1.0"
+description = "SWE-bench Verified as an Agentix namespace"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=2.18",
+]
+
+[project.entry-points."agentix.namespace"]
+swebench = "agentix.swebench"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentix"]
