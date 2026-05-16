@@ -1,23 +1,13 @@
 """Claude Code CLI as an Agentix namespace.
 
-Usage:
-
-    from agentix import RuntimeClient
     import claude_code
 
-    async with RuntimeClient(sandbox.runtime_url) as c:
-        r = await c.remote(
-            claude_code.run,
-            instruction="Fix the failing test in tests/test_foo.py",
-            workdir="/testbed",
-            env={"ANTHROPIC_API_KEY": api_key},
-        )
-        print(r.exit_code, r.stdout)
-
-The namespace owns one thing: invoking the `claude` CLI and reporting
-what it printed. Turning the agent's workspace changes into a patch
-(or anything else downstream) is the caller's concern — typically a
-`bash.run("git add -A && git diff --cached")` on the host side.
+    r = await c.remote(
+        claude_code.run,
+        instruction="Fix tests/test_foo.py",
+        workdir="/testbed",
+        env={"ANTHROPIC_API_KEY": api_key},
+    )
 """
 
 from __future__ import annotations

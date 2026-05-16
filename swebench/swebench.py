@@ -1,36 +1,13 @@
 """SWE-bench scoring as an Agentix namespace.
 
-Leans on the official `swebench` package for the parts that *should*
-be reused — per-repo test specs, log parsers, the grading function —
-and writes the async orchestration in our framework's idiom.
-
-ONE method: `score(instance, patch)`. The caller hands us a raw
-SWE-bench dataset row plus a model patch; we set up the per-instance
-conda env, apply the patch, run the official eval script, and grade
-with `swebench.harness.grading.get_eval_report`.
-
-Sandbox requirements (bake into the bundle image):
-- bash, git, curl
-- Miniconda at `/opt/miniconda3` (the eval scripts source it to
-  activate the per-instance conda env)
-
-For full reproducibility on a fleet, point your bundle's Dockerfile
-at SWE-bench's per-instance images (`sweb.eval.x86_64.<instance>`)
-instead of building the env at score-time.
-
-Usage:
-
     from datasets import load_dataset
-    from agentix import RuntimeClient
     import swebench
 
     inst = dict(load_dataset("princeton-nlp/SWE-bench_Verified", split="test")[0])
+    s = await c.remote(swebench.score, instance=inst, patch=patch)
 
-    async with RuntimeClient(sandbox.runtime_url) as c:
-        s = await c.remote(swebench.score, instance=inst, patch=agent_patch)
-        print("resolved" if s.resolved else "no",
-              "missing:", s.fail_to_pass_missing,
-              "broken:", s.pass_to_pass_broken)
+Requires bash, git, curl, and miniconda at /opt/miniconda3 in the
+sandbox image.
 """
 
 from __future__ import annotations
