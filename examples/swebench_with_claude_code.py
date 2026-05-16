@@ -62,18 +62,11 @@ async def solve_one(c: RuntimeClient, inst: dict, api_key: str) -> None:
         print(f"[{iid}] no patch produced — skipping score")
         return
 
-    s = await c.remote(
-        swebench.score,
-        repo=inst["repo"],
-        base_commit=inst["base_commit"],
-        patch=cc.patch,
-        test_patch=inst["test_patch"],
-        fail_to_pass=list(inst["FAIL_TO_PASS"]),
-        pass_to_pass=list(inst["PASS_TO_PASS"]),
-    )
-    verdict = "PASS" if s.passed else "FAIL"
+    s = await c.remote(swebench.score, instance=inst, patch=cc.patch)
+    verdict = "PASS" if s.resolved else "FAIL"
     ftp_total = len(s.fail_to_pass_resolved) + len(s.fail_to_pass_missing)
-    print(f"[{iid}] {verdict}  resolved={len(s.fail_to_pass_resolved)}/{ftp_total}  "
+    print(f"[{iid}] {verdict}  patch_applied={s.patch_applied}  "
+          f"resolved={len(s.fail_to_pass_resolved)}/{ftp_total}  "
           f"regressions={len(s.pass_to_pass_broken)}")
 
 
@@ -84,7 +77,7 @@ async def main(args: argparse.Namespace) -> int:
         return 2
 
     ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
-    instances = list(ds.select(range(args.limit)))
+    instances = [dict(ds[i]) for i in range(args.limit)]
 
     cfg = SandboxConfig(image=args.image)
     async with session(DockerDeployment(), cfg) as sandbox:

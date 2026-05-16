@@ -5,9 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "agentix-swebench"
 version = "0.1.0"
-description = "SWE-bench Verified scoring as an Agentix namespace"
+description = "SWE-bench scoring as an Agentix namespace"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "swebench>=4.0",
+]
 
 [project.entry-points."agentix.namespace"]
 swebench = "swebench"

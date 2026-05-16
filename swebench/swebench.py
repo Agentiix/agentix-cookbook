@@ -1,137 +1,162 @@
-"""SWE-bench Verified scoring as an Agentix namespace.
+"""SWE-bench scoring as an Agentix namespace.
 
-ONE method: `score`. Apply the model patch + the dataset's held-out
-test patch to the target repo, run the relevant tests, return what
-passed / failed / regressed. The dataset is the caller's concern —
-load it with `datasets`, iterate, pass the instance fields to
-`score` per call.
+Leans on the official `swebench` package for the parts that *should*
+be reused — per-repo test specs, log parsers, the grading function —
+and writes the async orchestration in our framework's idiom.
+
+ONE method: `score(instance, patch)`. The caller hands us a raw
+SWE-bench dataset row plus a model patch; we set up the per-instance
+conda env, apply the patch, run the official eval script, and grade
+with `swebench.harness.grading.get_eval_report`.
+
+Sandbox requirements (bake into the bundle image):
+- bash, git, curl
+- Miniconda at `/opt/miniconda3` (the eval scripts source it to
+  activate the per-instance conda env)
+
+For full reproducibility on a fleet, point your bundle's Dockerfile
+at SWE-bench's per-instance images (`sweb.eval.x86_64.<instance>`)
+instead of building the env at score-time.
+
+Usage:
 
     from datasets import load_dataset
     from agentix import RuntimeClient
     import swebench
 
-    ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
-    inst = ds[0]
+    inst = dict(load_dataset("princeton-nlp/SWE-bench_Verified", split="test")[0])
 
     async with RuntimeClient(sandbox.runtime_url) as c:
-        s = await c.remote(
-            swebench.score,
-            repo=inst["repo"],
-            base_commit=inst["base_commit"],
-            patch=agent_patch,
-            test_patch=inst["test_patch"],
-            fail_to_pass=inst["FAIL_TO_PASS"],
-            pass_to_pass=inst["PASS_TO_PASS"],
-        )
-        print(s.passed, s.fail_to_pass_missing)
-
-Repo materialisation for the agent is also caller-side — use `bash`
-to clone or have the agent clone itself. Keeping the namespace
-focused on scoring means it never has to manage agent workspaces or
-mediate dataset access.
+        s = await c.remote(swebench.score, instance=inst, patch=agent_patch)
+        print("resolved" if s.resolved else "no",
+              "missing:", s.fail_to_pass_missing,
+              "broken:", s.pass_to_pass_broken)
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import re
-import shlex
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 WORKROOT = Path(os.environ.get("AGENTIX_UPLOAD_ROOT", "/tmp")) / ".cache" / "swebench-eval"
+TESTBED = "/testbed"
+LOG_FILE = "test_output.log"
 
 
 @dataclass
 class Score:
-    passed: bool
+    resolved: bool
+    patch_applied: bool
     fail_to_pass_resolved: list[str]
     fail_to_pass_missing: list[str]
+    pass_to_pass_kept: list[str]
     pass_to_pass_broken: list[str]
     logs: str
 
 
 async def score(
     *,
-    repo: str,
-    base_commit: str,
+    instance: dict[str, Any],
     patch: str,
-    test_patch: str,
-    fail_to_pass: list[str],
-    pass_to_pass: list[str],
-    test_cmd: str | None = None,
-    timeout: float = 1800,
+    setup_timeout: float = 1800,
+    eval_timeout: float = 1800,
 ) -> Score:
-    """Apply `patch` + `test_patch` to `repo`@`base_commit` and run the tests.
-
-    The eval workdir is fresh per call — never trusts external state.
-    Cleaned up on exit (success or failure).
-
-    `test_cmd` defaults to a pytest invocation on the union of the
-    expected tests. Repos whose suites don't speak pytest (Django,
-    nose, tox-wrapped, …) require an explicit `test_cmd`; the cookbook
-    leaves that mapping to the caller to keep this recipe small. For
-    full per-repo fidelity, delegate to `swebench.harness.run_evaluation`.
-    """
-    workdir = await asyncio.to_thread(_checkout, repo, base_commit)
-    try:
-        await _apply(workdir, patch)
-        await _apply(workdir, test_patch)
-        cmd = test_cmd or _pytest_for(fail_to_pass + pass_to_pass)
-        logs = await _run(cmd, workdir, timeout)
-        passed_tests, failed_tests = _parse_pytest(logs)
-        missing = [t for t in fail_to_pass if t not in passed_tests]
-        broken = [t for t in pass_to_pass if t in failed_tests]
-        return Score(
-            passed=not missing and not broken,
-            fail_to_pass_resolved=[t for t in fail_to_pass if t in passed_tests],
-            fail_to_pass_missing=missing,
-            pass_to_pass_broken=broken,
-            logs=logs,
-        )
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
-
-
-def _checkout(repo: str, base_commit: str) -> Path:
-    """Clone `repo` at `base_commit` into a fresh dir."""
-    dest = WORKROOT / f"{repo.replace('/', '__')}-{base_commit[:12]}"
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--quiet", f"https://github.com/{repo}.git", str(dest)],
-        check=True, capture_output=True,
+    """Run the official SWE-bench evaluation for `instance` against `patch`."""
+    from swebench.harness.constants import (
+        APPLY_PATCH_FAIL,
+        APPLY_PATCH_PASS,
+        KEY_INSTANCE_ID,
+        KEY_MODEL,
+        KEY_PREDICTION,
     )
-    subprocess.run(
-        ["git", "checkout", "--quiet", base_commit],
-        cwd=dest, check=True, capture_output=True,
+    from swebench.harness.grading import get_eval_report
+    from swebench.harness.test_spec.test_spec import make_test_spec
+
+    spec = make_test_spec(instance)
+    workroot = WORKROOT / spec.instance_id
+    if workroot.exists():
+        shutil.rmtree(workroot)
+    workroot.mkdir(parents=True)
+
+    log_path = workroot / LOG_FILE
+
+    # 1. Reset /testbed: clone repo at base_commit, create per-instance conda env.
+    setup_log = await _run_script(
+        workroot / "setup.sh",
+        ["#!/bin/bash", "set -uxo pipefail", f"rm -rf {TESTBED}",
+         *spec.repo_script_list, *spec.env_script_list],
+        timeout=setup_timeout,
     )
-    return dest
+
+    # 2. Apply the model patch under the testbed's conda env. Emit the
+    #    official APPLY_PATCH_PASS/FAIL markers so get_eval_report can
+    #    tell whether the patch took.
+    (workroot / "model.patch").write_text(patch or "")
+    apply_log = await _run_script(
+        workroot / "apply.sh",
+        ["#!/bin/bash", "set -uxo pipefail",
+         "source /opt/miniconda3/bin/activate testbed",
+         f"cd {TESTBED}",
+         f"if git apply --allow-empty --whitespace=nowarn {workroot}/model.patch; then",
+         f"  echo '{APPLY_PATCH_PASS}'",
+         "else",
+         f"  echo '{APPLY_PATCH_FAIL}'",
+         "fi"],
+        timeout=300,
+    )
+
+    # 3. Run the official eval script (applies test_patch + runs test cmd
+    #    with START/END markers around stdout).
+    eval_log = await _run_script(
+        workroot / "eval.sh",
+        spec.eval_script.splitlines(),
+        timeout=eval_timeout,
+    )
+
+    # Combined log: setup-and-apply context plus the eval block. The
+    # grading function only scans for markers, so the prefix is harmless.
+    log_path.write_text(setup_log + apply_log + eval_log)
+
+    # 4. Grade with the official report function. It reads the log file,
+    #    uses the per-repo parser from MAP_REPO_TO_PARSER, and compares
+    #    against spec.FAIL_TO_PASS / spec.PASS_TO_PASS.
+    report = get_eval_report(
+        test_spec=spec,
+        prediction={
+            KEY_INSTANCE_ID: spec.instance_id,
+            KEY_MODEL: "agentix-cookbook",
+            KEY_PREDICTION: patch,
+        },
+        test_log_path=str(log_path),
+        include_tests_status=True,
+    )
+    entry = report[spec.instance_id]
+    tests = entry.get("tests_status", {})
+    ftp = tests.get("FAIL_TO_PASS", {"success": [], "failure": []})
+    ptp = tests.get("PASS_TO_PASS", {"success": [], "failure": []})
+
+    return Score(
+        resolved=entry.get("resolved", False),
+        patch_applied=entry.get("patch_successfully_applied", False),
+        fail_to_pass_resolved=list(ftp.get("success", [])),
+        fail_to_pass_missing=list(ftp.get("failure", [])),
+        pass_to_pass_kept=list(ptp.get("success", [])),
+        pass_to_pass_broken=list(ptp.get("failure", [])),
+        logs=log_path.read_text(),
+    )
 
 
-async def _apply(workdir: Path, patch: str) -> None:
-    if not patch.strip():
-        return
+async def _run_script(path: Path, lines: list[str], *, timeout: float) -> str:
+    """Write `lines` to `path`, chmod +x, run it, return combined stdout+stderr."""
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o755)
     proc = await asyncio.create_subprocess_exec(
-        "git", "apply", "--allow-empty", "--whitespace=nowarn", "-",
-        cwd=workdir,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate(patch.encode())
-    if proc.returncode:
-        raise RuntimeError(f"git apply failed: {stderr.decode(errors='replace')}")
-
-
-async def _run(cmd: str, cwd: Path, timeout: float) -> str:
-    proc = await asyncio.create_subprocess_shell(
-        cmd, cwd=cwd,
+        "bash", str(path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -141,18 +166,5 @@ async def _run(cmd: str, cwd: Path, timeout: float) -> str:
     except TimeoutError:
         proc.kill()
         await proc.communicate()
-        return f"<test command timed out after {timeout}s>"
-
-
-def _pytest_for(tests: list[str]) -> str:
-    return "python -m pytest -rN --tb=short -v " + " ".join(shlex.quote(t) for t in tests)
-
-
-_PYTEST_LINE = re.compile(r"^(?P<name>\S+)\s+(?P<status>PASSED|FAILED|ERROR)\b", re.M)
-
-
-def _parse_pytest(log: str) -> tuple[set[str], set[str]]:
-    passed, failed = set(), set()
-    for m in _PYTEST_LINE.finditer(log):
-        (passed if m["status"] == "PASSED" else failed).add(m["name"])
-    return passed, failed
+        from swebench.harness.constants import TESTS_TIMEOUT
+        return f"{TESTS_TIMEOUT}\nscript {path.name} timed out after {timeout}s\n"
