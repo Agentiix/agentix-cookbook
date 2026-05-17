@@ -1,9 +1,10 @@
 """End-to-end: SWE-bench Verified × Claude Code on Agentix.
 
 Prereqs:
-    pip install -e ./claude-code -e ./swebench   # caller-side imports
-    pip install datasets                          # for loading the split
-    agentix build bash files claude-code swebench -o cookbook:0.1.0
+    pip install -e ../Agentix-Runtime-Basic   # provides `agentix.bash`, `agentix.files`
+    pip install -e ./claude-code ./swebench   # caller-side imports for c.remote(...)
+    pip install datasets                       # for loading the split
+    agentix build ../Agentix-Runtime-Basic ./claude-code ./swebench -o cookbook:0.1.0
     export ANTHROPIC_API_KEY=sk-...
 
 Run:
@@ -23,10 +24,7 @@ import asyncio
 import os
 import sys
 
-import bash
-import claude_code
-import swebench
-from agentix import RuntimeClient, SandboxConfig
+from agentix import RuntimeClient, SandboxConfig, bash, claude_code, swebench
 from agentix.deployment.base import session
 from agentix.deployment.docker import DockerDeployment
 from datasets import load_dataset

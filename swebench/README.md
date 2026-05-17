@@ -28,7 +28,7 @@ The bundle image must ship:
 
 ```python
 from datasets import load_dataset
-import swebench
+from agentix import swebench
 
 inst = dict(load_dataset("princeton-nlp/SWE-bench_Verified", split="test")[0])
 
@@ -39,5 +39,5 @@ print("PASS" if s.resolved else "FAIL", s.fail_to_pass_missing)
 ## Build
 
 ```bash
-agentix build swebench -o swebench:0.1.0
+agentix build ./swebench -o swebench:0.1.0
 ```

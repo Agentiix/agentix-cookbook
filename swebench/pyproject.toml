@@ -5,14 +5,21 @@ build-backend = "hatchling.build"
 [project]
 name = "agentix-swebench"
 version = "0.1.0"
-description = "SWE-bench scoring as an Agentix namespace"
+description = "SWE-bench Verified scoring as an Agentix namespace"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Agentiix" }]
+urls = { Homepage = "https://github.com/Agentiix/agentix-cookbook" }
 dependencies = [
+    # Upstream harness: `make_test_spec`, `get_eval_report`, repo→parser map.
+    # The cookbook namespace is at `agentix.swebench`; the upstream package
+    # is still at `swebench`. The two coexist without collision.
     "swebench>=4.0",
 ]
 
 [project.entry-points."agentix.namespace"]
-swebench = "swebench"
+swebench = "agentix.swebench"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["swebench.py"]
+packages = ["src/agentix"]

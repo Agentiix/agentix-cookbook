@@ -1,22 +1,23 @@
 # Agentix Cookbook
 
-Working namespace recipes for [Agentix](https://github.com/Agentiix/Agentix).
-Each subdirectory is a standalone pip-installable wheel.
+Working integrations for [Agentix](https://github.com/Agentiix/Agentix).
+Each subdirectory is a standalone Python project — install it with
+`pip install ./<dir>` and the framework picks it up automatically.
 
-## Recipes
+## Integrations
 
-- [`claude-code/`](./claude-code) — **agentix-claude-code**. Wraps
-  Anthropic's [Claude Code](https://docs.anthropic.com/claude/docs/claude-code)
-  CLI as a typed namespace. Nix-pinned binary, per-call API key
-  passthrough, exposes `claude_code.run(instruction, workdir, ...) -> RunResult`.
-- [`swebench/`](./swebench) — **agentix-swebench**. Wraps the official
-  [`swebench`](https://github.com/swe-bench/SWE-bench) package's
-  `make_test_spec` + `get_eval_report`. Exposes one method:
+- [`claude-code/`](./claude-code) — **Claude Code**. Wraps Anthropic's
+  [CLI](https://docs.anthropic.com/claude/docs/claude-code) as a
+  typed namespace with a Nix-pinned binary and per-call API key
+  passthrough. Exposes `claude_code.run(instruction, workdir, ...) -> RunResult`.
+- [`swebench/`](./swebench) — **SWE-bench Verified scorer**. Wraps
+  the official [`swebench`](https://github.com/swe-bench/SWE-bench)
+  package's `make_test_spec` + `get_eval_report`. Exposes one method:
   `swebench.score(instance, patch) -> Score`.
 
 ## End-to-end example
 
-A SWE-bench Verified rollout, composed from three namespaces:
+A SWE-bench Verified rollout, composed from three integrations:
 
 ```python
 from datasets import load_dataset
@@ -49,8 +50,12 @@ Full version in [`examples/swebench_with_claude_code.py`](./examples/swebench_wi
 ## Install, build, run
 
 ```bash
-pip install ./claude-code ./swebench
-agentix build bash files claude-code swebench -o cookbook:0.1.0
+# bash + files come from agentix-runtime-basic (sibling repo);
+# claude-code and swebench come from this repo.
+pip install -e ../Agentix-Runtime-Basic ./claude-code ./swebench
+
+# Bundle all four namespaces into one deploy-ready image.
+agentix build ../Agentix-Runtime-Basic ./claude-code ./swebench -o cookbook:0.1.0
 agentix deploy local --image cookbook:0.1.0
 
 python examples/swebench_with_claude_code.py --limit 5

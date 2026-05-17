@@ -5,8 +5,8 @@
 ```
 claude-code/
 ├── pyproject.toml
-├── default.nix          — claude CLI + git
-└── claude_code.py
+├── default.nix                       — claude CLI + git
+└── src/agentix/claude_code/__init__.py
 ```
 
 ## Surface
@@ -26,7 +26,7 @@ async def run(
 ## Usage
 
 ```python
-import claude_code, bash
+from agentix import bash, claude_code
 
 r = await c.remote(
     claude_code.run,
@@ -37,7 +37,7 @@ r = await c.remote(
 
 diff = await c.remote(
     bash.run,
-    command=f"cd /testbed && git add -A && git diff --cached --no-color",
+    command="cd /testbed && git add -A && git diff --cached --no-color",
 )
 patch = diff.stdout
 ```
@@ -45,5 +45,5 @@ patch = diff.stdout
 ## Build
 
 ```bash
-agentix build claude-code -o claude-code:0.1.0
+agentix build ./claude-code -o claude-code:0.1.0
 ```

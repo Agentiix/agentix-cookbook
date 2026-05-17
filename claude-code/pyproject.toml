@@ -6,11 +6,22 @@ build-backend = "hatchling.build"
 name = "agentix-claude-code"
 version = "0.1.0"
 description = "Claude Code CLI as an Agentix namespace"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Agentiix" }]
+urls = { Homepage = "https://github.com/Agentiix/agentix-cookbook" }
 dependencies = []
 
+# The namespace lives at `agentix.claude_code` — caller-side
+# `from agentix.claude_code import run` resolves once this wheel is
+# installed alongside the framework. The entry-point declaration is
+# what makes the framework discover + dispatch to it.
 [project.entry-points."agentix.namespace"]
-claude_code = "claude_code"
+claude_code = "agentix.claude_code"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["claude_code.py"]
+# `src/agentix/` is a PEP 420 namespace package (no __init__.py);
+# hatchling walks it and installs files at `agentix/claude_code/` in
+# the wheel.
+packages = ["src/agentix"]

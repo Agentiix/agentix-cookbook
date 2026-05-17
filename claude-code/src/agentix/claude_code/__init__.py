@@ -1,6 +1,6 @@
 """Claude Code CLI as an Agentix namespace.
 
-    import claude_code
+    from agentix import claude_code
 
     r = await c.remote(
         claude_code.run,

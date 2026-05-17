@@ -1,7 +1,7 @@
 """SWE-bench scoring as an Agentix namespace.
 
     from datasets import load_dataset
-    import swebench
+    from agentix import swebench
 
     inst = dict(load_dataset("princeton-nlp/SWE-bench_Verified", split="test")[0])
     s = await c.remote(swebench.score, instance=inst, patch=patch)
