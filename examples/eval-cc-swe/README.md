@@ -6,15 +6,12 @@ the official harness.
 
 ```
 examples/eval-cc-swe/
-├── pyproject.toml            — project + deps
-├── default.nix               — claude CLI + git (Nix-pinned)
+├── pyproject.toml     — project + deps
+├── default.nix        — claude CLI + git (Nix-pinned)
 ├── README.md
-└── src/
-    ├── cc/__init__.py        — sandbox: `run(instruction, …)` → claude CLI
-    ├── swe/__init__.py       — sandbox: `score(instance, patch)` → SWE-bench harness
-    └── runner/               — host: orchestrator (`python -m runner …`)
-        ├── __init__.py
-        └── __main__.py
+├── cc.py              — sandbox: `cc.run(instruction, …)` → claude CLI
+├── swe.py             — sandbox: `swe.score(instance, patch)` → SWE-bench harness
+└── runner.py          — host: orchestrator (`python -m runner …`)
 ```
 
 `cc` and `swe` are sandbox-side dispatch targets (regular Python

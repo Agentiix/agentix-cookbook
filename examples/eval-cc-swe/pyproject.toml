@@ -20,4 +20,4 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cc", "src/swe", "src/runner"]
+only-include = ["cc.py", "swe.py", "runner.py"]

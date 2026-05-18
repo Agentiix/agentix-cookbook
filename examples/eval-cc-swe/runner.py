@@ -6,7 +6,7 @@ Per instance:
   3. `bash.run(...)` to extract the patch (`git add -A && git diff --cached`)
   4. `swe.score(...)` to apply the patch + run the harness
 
-Run as `python -m runner --limit N` (see `__main__.py`).
+Run as `python -m runner --limit N` or `python runner.py --limit N`.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ async def _extract_patch(c: RuntimeClient, workdir: str) -> str:
 
 
 async def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="runner", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--image", default="eval-cc-swe:0.1.0",
         help="Bundle image produced by `agentix build .`.",
@@ -104,4 +104,5 @@ async def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["main", "solve_one"]
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main(sys.argv[1:])))
