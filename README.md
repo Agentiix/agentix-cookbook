@@ -8,6 +8,7 @@ in real workflows. Each example is its own buildable project under
 
 | Example | What it does |
 |---|---|
+| [`examples/hello-agentix/`](./examples/hello-agentix) | Smallest end-to-end flow: `agentix build` a bundle, overlay it onto `python:3.13-slim`, `bash.run` remote, tear down. |
 | [`examples/eval-cc-swe/`](./examples/eval-cc-swe) | Evaluate Claude Code on SWE-bench Verified — clone repo, run claude, score the patch. |
 
 Each example is a self-contained Python project with its own

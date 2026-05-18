@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hello-agentix"
+version = "0.1.0"
+description = "Smallest end-to-end Agentix demo — build a bundle, mount it on a task image, run bash remote"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Agentiix" }]
+urls = { Homepage = "https://github.com/Agentiix/agentix-cookbook" }
+dependencies = [
+    "agentixx>=0.1.5",
+    "agentix-runtime-basic>=0.1.4",
+    "agentix-deployment-docker>=0.1.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hello_agentix"]
