@@ -49,17 +49,39 @@ Full version in [`examples/swebench_with_claude_code.py`](./examples/swebench_wi
 
 ## Install, build, run
 
-```bash
-# bash + files come from agentix-runtime-basic (sibling repo);
-# claude-code and swebench come from this repo.
-pip install -e ../Agentix-Runtime-Basic ./claude-code ./swebench
+Declare each plugin as a dep in your own project's `pyproject.toml`:
 
-# Bundle all four namespaces into one deploy-ready image.
-agentix build ../Agentix-Runtime-Basic ./claude-code ./swebench -o cookbook:0.1.0
+```toml
+[project]
+name = "my-cookbook-bundle"
+version = "0.1.0"
+dependencies = [
+    "agentixx>=0.1.0",
+    "agentix-runtime-basic>=0.1.0",   # bash + files
+    "agentix-claude-code>=0.1.0",     # claude CLI
+    "agentix-swebench>=0.1.0",        # SWE-bench scoring
+]
+```
+
+Then build + deploy:
+
+```bash
+pip install -e .                       # host-side: enables typed dispatch
+agentix build -o cookbook:0.1.0        # one image with all four plugins
 agentix deploy local --image cookbook:0.1.0
 
 python examples/swebench_with_claude_code.py --limit 5
 ```
+
+For development against unpublished plugin sources, install them
+editable first:
+
+```bash
+pip install -e ../Agentix-Runtime-Basic ./claude-code ./swebench
+```
+
+Once `agentix-claude-code` and `agentix-swebench` are on PyPI, your
+project's deps resolve from there directly — no sibling-repo dance.
 
 ## Sandbox requirements
 

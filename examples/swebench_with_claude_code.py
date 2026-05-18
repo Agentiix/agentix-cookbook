@@ -1,11 +1,13 @@
 """End-to-end: SWE-bench Verified × Claude Code on Agentix.
 
-Prereqs:
-    pip install -e ../Agentix-Runtime-Basic   # provides `agentix.bash`, `agentix.files`
-    pip install -e ./claude-code ./swebench   # caller-side imports for c.remote(...)
-    pip install datasets                       # for loading the split
-    agentix build ../Agentix-Runtime-Basic ./claude-code ./swebench -o cookbook:0.1.0
+Prereqs (in a project that declares the three plugins as deps):
+    pip install -e .                  # your project + agentix-* plugins
+    pip install datasets               # for loading the split
+    agentix build -o cookbook:0.1.0    # one image with everything
     export ANTHROPIC_API_KEY=sk-...
+
+For dev against unpublished plugins, editable-install them first:
+    pip install -e ../Agentix-Runtime-Basic ./claude-code ./swebench
 
 Run:
     python examples/swebench_with_claude_code.py            # one instance
