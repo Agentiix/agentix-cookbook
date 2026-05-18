@@ -20,4 +20,4 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/eval_cc_swe"]
+packages = ["src/cc", "src/swe", "src/runner"]

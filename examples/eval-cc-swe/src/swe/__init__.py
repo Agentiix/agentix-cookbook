@@ -1,22 +1,9 @@
-"""Sandbox-side functions for evaluating Claude Code on SWE-bench.
+"""Sandbox-side: run the SWE-bench Verified scorer against a patch.
 
-Two async functions run inside the rollout container:
-
-  * `run_claude(...)`     — invoke the `claude` CLI against a workdir
-  * `score(...)`          — apply the patch + run SWE-bench's official grader
-
-Host-side, the orchestrator in `run.py` calls them via
-`c.remote(run_claude, …)` / `c.remote(score, …)`. Neither function
-imports anything from `agentix` — they're just Python; the framework
-dispatches them by their module path (`eval_cc_swe`).
-
-Sandbox requirements (provided by `default.nix` + the runtime base
-image):
-
-  * `claude` on PATH (Nix-pinned)
-  * `git` on PATH
-  * miniconda at `/opt/miniconda3` (the SWE-bench eval scripts source
-    it to activate per-instance conda envs)
+Host orchestrator calls `c.remote(swe.score, instance=..., patch=...)`.
+Wraps `make_test_spec` + `get_eval_report` from the upstream `swebench`
+package; each instance gets its own conda env under
+`/opt/miniconda3` (the runtime image must ship miniconda there).
 """
 
 from __future__ import annotations
@@ -31,64 +18,6 @@ from typing import Any
 WORKROOT = Path(os.environ.get("AGENTIX_UPLOAD_ROOT", "/tmp")) / ".cache" / "swebench-eval"
 TESTBED = "/testbed"
 LOG_FILE = "test_output.log"
-
-
-# ── run_claude ───────────────────────────────────────────────────────
-
-
-@dataclass
-class ClaudeResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-
-
-async def run_claude(
-    instruction: str,
-    *,
-    workdir: str = TESTBED,
-    timeout: float = 600,
-    model: str | None = None,
-    max_turns: int | None = None,
-    env: dict[str, str] | None = None,
-) -> ClaudeResult:
-    """Run Claude Code against `workdir` with `instruction`.
-
-    The caller is responsible for staging the repo at `workdir` (typically
-    via `c.remote(bash.run, command="git clone …")` host-side) and for
-    extracting the resulting patch afterwards.
-    """
-    cmd = ["claude", "-p", instruction, "--print",
-           "--permission-mode", "bypassPermissions"]
-    if model:
-        cmd += ["--model", model]
-    if max_turns is not None:
-        cmd += ["--max-turns", str(max_turns)]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=workdir,
-        env={**os.environ, **(env or {})},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        return ClaudeResult(
-            exit_code=-1, stdout="", stderr=f"claude timed out after {timeout}s",
-        )
-
-    return ClaudeResult(
-        exit_code=proc.returncode or 0,
-        stdout=stdout.decode(errors="replace"),
-        stderr=stderr.decode(errors="replace"),
-    )
-
-
-# ── score ────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -109,13 +38,7 @@ async def score(
     setup_timeout: float = 1800,
     eval_timeout: float = 1800,
 ) -> Score:
-    """Run the official SWE-bench evaluation for `instance` against `patch`.
-
-    Wraps `make_test_spec` + `get_eval_report` from the upstream
-    `swebench` harness. The conda env is set up per-instance; teardown
-    is left to subsequent calls (each instance's workroot lives at
-    `WORKROOT/<instance_id>/`).
-    """
+    """Run the official SWE-bench evaluation for `instance` against `patch`."""
     from swebench.harness.constants import (
         APPLY_PATCH_FAIL,
         APPLY_PATCH_PASS,
@@ -167,7 +90,6 @@ async def score(
         timeout=eval_timeout,
     )
 
-    # The grading function reads markers from the combined log.
     log_path.write_text(setup_log + apply_log + eval_log)
 
     # 4. Grade with the official report function.
@@ -195,9 +117,6 @@ async def score(
         pass_to_pass_broken=list(ptp.get("failure", [])),
         logs=log_path.read_text(),
     )
-
-
-# ── internal ─────────────────────────────────────────────────────────
 
 
 async def _run_script(path: Path, lines: list[str], *, timeout: float) -> str:

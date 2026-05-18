@@ -1,23 +1,12 @@
 """Host-side orchestrator: evaluate Claude Code on SWE-bench Verified.
 
-Each instance:
+Per instance:
   1. clone the repo at `base_commit` via `bash.run`
-  2. `eval_cc_swe.run_claude` against the testbed
-  3. `bash.run` to extract the patch (`git add -A && git diff --cached`)
-  4. `eval_cc_swe.score` to apply the patch + run the harness
+  2. `cc.run(...)` against the testbed
+  3. `bash.run(...)` to extract the patch (`git add -A && git diff --cached`)
+  4. `swe.score(...)` to apply the patch + run the harness
 
-The bundle image (built via `agentix build .`) ships `eval_cc_swe`,
-the `bash` namespace from `agentix-runtime-basic`, a Nix-pinned
-`claude` binary, and `git`. Miniconda is expected at
-`/opt/miniconda3` for SWE-bench's per-instance conda envs.
-
-Usage:
-    pip install -e .                              # host + bundle deps
-    docker build -t agentix/runtime:0.1.0 -f \
-        ../../Agentix-Runtime-Basic/runtime/Dockerfile .
-    agentix build . -o eval-cc-swe:0.1.0
-    export ANTHROPIC_API_KEY=sk-…
-    python run.py --limit 5
+Run as `python -m runner --limit N` (see `__main__.py`).
 """
 
 from __future__ import annotations
@@ -32,7 +21,8 @@ from agentix.deployment.base import SandboxConfig, session
 from agentix.deployment.docker import DockerDeployment
 from datasets import load_dataset
 
-from eval_cc_swe import run_claude, score
+import cc
+import swe
 
 WORKDIR = "/testbed"
 
@@ -51,8 +41,8 @@ async def solve_one(c: RuntimeClient, inst: dict, api_key: str) -> None:
     )
 
     print(f"[{iid}] running claude")
-    cc = await c.remote(
-        run_claude,
+    out = await c.remote(
+        cc.run,
         instruction=inst["problem_statement"],
         workdir=WORKDIR,
         timeout=900,
@@ -60,12 +50,12 @@ async def solve_one(c: RuntimeClient, inst: dict, api_key: str) -> None:
     )
 
     patch = await _extract_patch(c, WORKDIR)
-    print(f"[{iid}] claude exit={cc.exit_code} patch_bytes={len(patch)}")
+    print(f"[{iid}] claude exit={out.exit_code} patch_bytes={len(patch)}")
     if not patch:
         print(f"[{iid}] no patch produced — skipping score")
         return
 
-    s = await c.remote(score, instance=inst, patch=patch)
+    s = await c.remote(swe.score, instance=inst, patch=patch)
     verdict = "PASS" if s.resolved else "FAIL"
     ftp_total = len(s.fail_to_pass_resolved) + len(s.fail_to_pass_missing)
     print(
@@ -85,7 +75,18 @@ async def _extract_patch(c: RuntimeClient, workdir: str) -> str:
     return r.stdout if r.exit_code == 0 else ""
 
 
-async def main(args: argparse.Namespace) -> int:
+async def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="runner", description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--image", default="eval-cc-swe:0.1.0",
+        help="Bundle image produced by `agentix build .`.",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=1,
+        help="Number of SWE-bench instances to run.",
+    )
+    args = parser.parse_args(argv)
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print("error: ANTHROPIC_API_KEY is not set", file=sys.stderr)
@@ -103,14 +104,4 @@ async def main(args: argparse.Namespace) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--image", default="eval-cc-swe:0.1.0",
-        help="Bundle image produced by `agentix build .`.",
-    )
-    parser.add_argument(
-        "--limit", type=int, default=1,
-        help="Number of SWE-bench instances to run.",
-    )
-    raise SystemExit(asyncio.run(main(parser.parse_args())))
+__all__ = ["main", "solve_one"]

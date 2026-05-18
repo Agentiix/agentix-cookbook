@@ -6,31 +6,36 @@ the official harness.
 
 ```
 examples/eval-cc-swe/
-├── pyproject.toml                       — project + deps
-├── default.nix                          — claude CLI + git (Nix-pinned)
+├── pyproject.toml            — project + deps
+├── default.nix               — claude CLI + git (Nix-pinned)
 ├── README.md
-├── run.py                               — host orchestrator
-└── src/eval_cc_swe/__init__.py          — sandbox-side: run_claude + score
+└── src/
+    ├── cc/__init__.py        — sandbox: `run(instruction, …)` → claude CLI
+    ├── swe/__init__.py       — sandbox: `score(instance, patch)` → SWE-bench harness
+    └── runner/               — host: orchestrator (`python -m runner …`)
+        ├── __init__.py
+        └── __main__.py
 ```
+
+`cc` and `swe` are sandbox-side dispatch targets (regular Python
+modules — no `agentix.*` import path needed). `runner` is the
+host-side orchestrator that wires them together.
 
 ## Architecture
 
 ```
                   host                              sandbox
        ┌────────────────────────┐        ┌────────────────────────┐
-       │ run.py                 │        │  worker subprocess     │
-       │   load_dataset()       │        │    eval_cc_swe.run_claude
-       │   c.remote(bash.run, …)│ ─────► │    eval_cc_swe.score    │
-       │   c.remote(run_claude, …)       │    bash.run (from       │
-       │   c.remote(score, …)   │        │    agentix-runtime-basic)
+       │ python -m runner       │        │  worker processes      │
+       │   c.remote(bash.run,…) │ ─────► │    bash.run            │
+       │   c.remote(cc.run, …)  │        │    cc.run              │
+       │   c.remote(swe.score,…)│        │    swe.score           │
        └────────────────────────┘        └────────────────────────┘
 ```
 
-`run_claude` and `score` are regular Python async functions in the
-`eval_cc_swe` module. They become RPC-dispatchable simply by being
-imported on the caller side — `c.remote(run_claude, ...)` reads
-`run_claude.__module__` (`eval_cc_swe`) and the sandbox-side
-multiplexer auto-registers the module on first dispatch.
+Routing is by `fn.__module__`: `cc.run` lands on a worker for module
+`cc`, `swe.score` on a worker for `swe`. The framework auto-registers
+each on first dispatch — no entry-point declaration needed.
 
 ## One-time setup
 
@@ -49,7 +54,8 @@ runtime image or extend `default.nix` here.
 ## Install, build, run
 
 ```bash
-# host-side: enables `from eval_cc_swe import …` for typed dispatch
+# host-side: enables `from cc import run`, `from swe import score`,
+# `from runner import main` for typed dispatch
 pip install -e .
 
 # package the project + every declared dep into one image
@@ -57,7 +63,7 @@ agentix build . -o eval-cc-swe:0.1.0
 
 # run
 export ANTHROPIC_API_KEY=sk-…
-python run.py --limit 5
+python -m runner --limit 5
 ```
 
 ## Output
@@ -70,19 +76,3 @@ sandbox up: http://127.0.0.1:42337
 [django__django-11099] PASS  patch_applied=True  resolved=2/2  regressions=0
 [django__django-13447] …
 ```
-
-## What this example demonstrates
-
-* **One project = one bundle.** The pyproject's `[project].dependencies`
-  is the bundle's plugin set; `agentix build .` resolves it and ships
-  one image.
-* **No `agentix.*` import path required for user code.** `eval_cc_swe`
-  is just a regular Python module — the framework dispatches by
-  `fn.__module__`, not by entry-point declaration.
-* **Inline composition.** `run.py` mixes `bash.run` (from
-  `agentix-runtime-basic`) with `run_claude` and `score` (this project)
-  freely. All three live in the same `/nix/runtime/` venv in the
-  bundle image; `from agentix import bash` works inside any worker.
-* **Nix for hermetic system binaries.** The pinned `claude` CLI lives
-  in `default.nix`; the bundle build symlinks it into
-  `/nix/runtime/bin/claude` so every worker picks it up via PATH.
