@@ -1,13 +1,22 @@
-"""SWE-bench scoring as an Agentix namespace.
+"""Sandbox-side functions for evaluating Claude Code on SWE-bench.
 
-    from datasets import load_dataset
-    from agentix import swebench
+Two async functions run inside the rollout container:
 
-    inst = dict(load_dataset("princeton-nlp/SWE-bench_Verified", split="test")[0])
-    s = await c.remote(swebench.score, instance=inst, patch=patch)
+  * `run_claude(...)`     — invoke the `claude` CLI against a workdir
+  * `score(...)`          — apply the patch + run SWE-bench's official grader
 
-Requires bash, git, curl, and miniconda at /opt/miniconda3 in the
-sandbox image.
+Host-side, the orchestrator in `run.py` calls them via
+`c.remote(run_claude, …)` / `c.remote(score, …)`. Neither function
+imports anything from `agentix` — they're just Python; the framework
+dispatches them by their module path (`eval_cc_swe`).
+
+Sandbox requirements (provided by `default.nix` + the runtime base
+image):
+
+  * `claude` on PATH (Nix-pinned)
+  * `git` on PATH
+  * miniconda at `/opt/miniconda3` (the SWE-bench eval scripts source
+    it to activate per-instance conda envs)
 """
 
 from __future__ import annotations
@@ -19,10 +28,67 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 WORKROOT = Path(os.environ.get("AGENTIX_UPLOAD_ROOT", "/tmp")) / ".cache" / "swebench-eval"
 TESTBED = "/testbed"
 LOG_FILE = "test_output.log"
+
+
+# ── run_claude ───────────────────────────────────────────────────────
+
+
+@dataclass
+class ClaudeResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+async def run_claude(
+    instruction: str,
+    *,
+    workdir: str = TESTBED,
+    timeout: float = 600,
+    model: str | None = None,
+    max_turns: int | None = None,
+    env: dict[str, str] | None = None,
+) -> ClaudeResult:
+    """Run Claude Code against `workdir` with `instruction`.
+
+    The caller is responsible for staging the repo at `workdir` (typically
+    via `c.remote(bash.run, command="git clone …")` host-side) and for
+    extracting the resulting patch afterwards.
+    """
+    cmd = ["claude", "-p", instruction, "--print",
+           "--permission-mode", "bypassPermissions"]
+    if model:
+        cmd += ["--model", model]
+    if max_turns is not None:
+        cmd += ["--max-turns", str(max_turns)]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=workdir,
+        env={**os.environ, **(env or {})},
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return ClaudeResult(
+            exit_code=-1, stdout="", stderr=f"claude timed out after {timeout}s",
+        )
+
+    return ClaudeResult(
+        exit_code=proc.returncode or 0,
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
+
+
+# ── score ────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -43,7 +109,13 @@ async def score(
     setup_timeout: float = 1800,
     eval_timeout: float = 1800,
 ) -> Score:
-    """Run the official SWE-bench evaluation for `instance` against `patch`."""
+    """Run the official SWE-bench evaluation for `instance` against `patch`.
+
+    Wraps `make_test_spec` + `get_eval_report` from the upstream
+    `swebench` harness. The conda env is set up per-instance; teardown
+    is left to subsequent calls (each instance's workroot lives at
+    `WORKROOT/<instance_id>/`).
+    """
     from swebench.harness.constants import (
         APPLY_PATCH_FAIL,
         APPLY_PATCH_PASS,
@@ -71,8 +143,8 @@ async def score(
     )
 
     # 2. Apply the model patch under the testbed's conda env. Emit the
-    #    official APPLY_PATCH_PASS/FAIL markers so get_eval_report can
-    #    tell whether the patch took.
+    #    official APPLY_PATCH_PASS / APPLY_PATCH_FAIL markers so the
+    #    grading function can tell whether the patch took.
     (workroot / "model.patch").write_text(patch or "")
     apply_log = await _run_script(
         workroot / "apply.sh",
@@ -87,26 +159,23 @@ async def score(
         timeout=300,
     )
 
-    # 3. Run the official eval script (applies test_patch + runs test cmd
-    #    with START/END markers around stdout).
+    # 3. Run the official eval script (applies test_patch + runs test
+    #    cmd with START/END markers around stdout).
     eval_log = await _run_script(
         workroot / "eval.sh",
         spec.eval_script.splitlines(),
         timeout=eval_timeout,
     )
 
-    # Combined log: setup-and-apply context plus the eval block. The
-    # grading function only scans for markers, so the prefix is harmless.
+    # The grading function reads markers from the combined log.
     log_path.write_text(setup_log + apply_log + eval_log)
 
-    # 4. Grade with the official report function. It reads the log file,
-    #    uses the per-repo parser from MAP_REPO_TO_PARSER, and compares
-    #    against spec.FAIL_TO_PASS / spec.PASS_TO_PASS.
+    # 4. Grade with the official report function.
     report = get_eval_report(
         test_spec=spec,
         prediction={
             KEY_INSTANCE_ID: spec.instance_id,
-            KEY_MODEL: "agentix-cookbook",
+            KEY_MODEL: "eval-cc-swe",
             KEY_PREDICTION: patch,
         },
         test_log_path=str(log_path),
@@ -126,6 +195,9 @@ async def score(
         pass_to_pass_broken=list(ptp.get("failure", [])),
         logs=log_path.read_text(),
     )
+
+
+# ── internal ─────────────────────────────────────────────────────────
 
 
 async def _run_script(path: Path, lines: list[str], *, timeout: float) -> str:

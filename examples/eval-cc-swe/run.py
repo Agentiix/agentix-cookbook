@@ -1,22 +1,23 @@
-"""End-to-end: SWE-bench Verified × Claude Code on Agentix.
+"""Host-side orchestrator: evaluate Claude Code on SWE-bench Verified.
 
-Prereqs (in a project that declares the three plugins as deps):
-    pip install -e .                  # your project + agentix-* plugins
-    pip install datasets               # for loading the split
-    agentix build -o cookbook:0.1.0    # one image with everything
-    export ANTHROPIC_API_KEY=sk-...
+Each instance:
+  1. clone the repo at `base_commit` via `bash.run`
+  2. `eval_cc_swe.run_claude` against the testbed
+  3. `bash.run` to extract the patch (`git add -A && git diff --cached`)
+  4. `eval_cc_swe.score` to apply the patch + run the harness
 
-For dev against unpublished plugins, editable-install them first:
-    pip install -e ../Agentix-Runtime-Basic ./claude-code ./swebench
+The bundle image (built via `agentix build .`) ships `eval_cc_swe`,
+the `bash` namespace from `agentix-runtime-basic`, a Nix-pinned
+`claude` binary, and `git`. Miniconda is expected at
+`/opt/miniconda3` for SWE-bench's per-instance conda envs.
 
-Run:
-    python examples/swebench_with_claude_code.py            # one instance
-    python examples/swebench_with_claude_code.py --limit 5  # five
-    python examples/swebench_with_claude_code.py --image my:0.2.0
-
-The script loads SWE-bench Verified host-side, deploys a local sandbox
-from the bundle image, and per instance: materialises the repo via
-`bash`, runs `claude_code.run`, then `swebench.score`s the patch.
+Usage:
+    pip install -e .                              # host + bundle deps
+    docker build -t agentix/runtime:0.1.0 -f \
+        ../../Agentix-Runtime-Basic/runtime/Dockerfile .
+    agentix build . -o eval-cc-swe:0.1.0
+    export ANTHROPIC_API_KEY=sk-…
+    python run.py --limit 5
 """
 
 from __future__ import annotations
@@ -26,11 +27,12 @@ import asyncio
 import os
 import sys
 
-from agentix import RuntimeClient, SandboxConfig, bash, claude_code, swebench
-from agentix.deployment.base import session
+from agentix import RuntimeClient, bash
+from agentix.deployment.base import SandboxConfig, session
 from agentix.deployment.docker import DockerDeployment
 from datasets import load_dataset
 
+from eval_cc_swe import run_claude, score
 
 WORKDIR = "/testbed"
 
@@ -48,27 +50,29 @@ async def solve_one(c: RuntimeClient, inst: dict, api_key: str) -> None:
         timeout=600,
     )
 
-    print(f"[{iid}] running claude_code")
+    print(f"[{iid}] running claude")
     cc = await c.remote(
-        claude_code.run,
+        run_claude,
         instruction=inst["problem_statement"],
         workdir=WORKDIR,
         timeout=900,
         env={"ANTHROPIC_API_KEY": api_key},
     )
+
     patch = await _extract_patch(c, WORKDIR)
     print(f"[{iid}] claude exit={cc.exit_code} patch_bytes={len(patch)}")
-
     if not patch:
         print(f"[{iid}] no patch produced — skipping score")
         return
 
-    s = await c.remote(swebench.score, instance=inst, patch=patch)
+    s = await c.remote(score, instance=inst, patch=patch)
     verdict = "PASS" if s.resolved else "FAIL"
     ftp_total = len(s.fail_to_pass_resolved) + len(s.fail_to_pass_missing)
-    print(f"[{iid}] {verdict}  patch_applied={s.patch_applied}  "
-          f"resolved={len(s.fail_to_pass_resolved)}/{ftp_total}  "
-          f"regressions={len(s.pass_to_pass_broken)}")
+    print(
+        f"[{iid}] {verdict}  patch_applied={s.patch_applied}  "
+        f"resolved={len(s.fail_to_pass_resolved)}/{ftp_total}  "
+        f"regressions={len(s.pass_to_pass_broken)}"
+    )
 
 
 async def _extract_patch(c: RuntimeClient, workdir: str) -> str:
@@ -101,8 +105,12 @@ async def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--image", default="cookbook:0.1.0",
-                        help="Bundle image produced by `agentix build`.")
-    parser.add_argument("--limit", type=int, default=1,
-                        help="Number of SWE-bench instances to run.")
+    parser.add_argument(
+        "--image", default="eval-cc-swe:0.1.0",
+        help="Bundle image produced by `agentix build .`.",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=1,
+        help="Number of SWE-bench instances to run.",
+    )
     raise SystemExit(asyncio.run(main(parser.parse_args())))

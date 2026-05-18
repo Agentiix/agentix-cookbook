@@ -1,12 +1,13 @@
-# System deps for the agentix.claude_code namespace.
+# System binaries for the eval-cc-swe bundle.
 #
 # `agentix build` runs this derivation in a builder stage and symlinks
-# the resulting `bin/*` into the namespace's `/nix/claude_code/bin/`
-# inside the bundle image. The namespace worker's PATH is prepended
-# with that bin/, so user code can call `claude` and `git` by bare name.
+# the resulting `bin/*` into `/nix/runtime/bin/` inside the bundle
+# image. Every worker subprocess inherits `/nix/runtime/bin/` on PATH,
+# so user code can `subprocess.run("claude", ...)` or call `git` by
+# bare name.
 #
 # Only system binaries belong here. The Python package itself is
-# installed into the namespace's venv by `pip install`, not by Nix.
+# installed into `/nix/runtime/`'s venv by `pip install`, not by Nix.
 { pkgs ? import <nixpkgs> { config.allowUnfree = true; } }:
 
 let
@@ -48,6 +49,6 @@ let
   });
 in
 pkgs.symlinkJoin {
-  name = "agentix-claude-code-deps";
+  name = "eval-cc-swe-deps";
   paths = [ claude pkgs.git ];
 }
